@@ -1,0 +1,225 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  EMPLOYEE
+  ANALYST
+}
+
+enum TicketType {
+  INC
+  REQ
+}
+
+enum TicketCategory {
+  ACESSO
+  REDE_VPN
+  HARDWARE
+  SOFTWARE
+  EMAIL
+  OUTROS
+}
+
+enum Priority {
+  CRITICA
+  ALTA
+  MEDIA
+  BAIXA
+}
+
+enum TicketStatus {
+  ABERTO
+  EM_ANDAMENTO
+  AGUARDANDO_ANALISTA
+  APROVADO
+  RESOLVIDO
+}
+
+enum Affected {
+  SOMENTE_EU
+  EQUIPE
+  EMPRESA
+  NAO_SEI
+}
+
+enum ConversationMode {
+  AGENT
+  WAITING_HUMAN
+  HUMAN
+  CLOSED
+}
+
+enum HandoffReason {
+  PEDIDO_USUARIO
+  CRITICO
+  VENCIDO
+  BAIXA_CONFIANCA
+}
+
+enum MessageRole {
+  USER
+  AGENT
+  ANALYST
+  SYSTEM
+}
+
+enum DraftKind {
+  CREATE
+  UPDATE
+}
+
+enum DraftStatus {
+  PENDING
+  CONFIRMED
+  CANCELED
+}
+
+model User {
+  id                String   @id @default(cuid())
+  email             String   @unique
+  name              String
+  role              Role     @default(EMPLOYEE)
+  department        String?
+  team              String?
+  passwordChangedAt DateTime @default(now())
+  createdAt         DateTime @default(now())
+
+  tickets               Ticket[]
+  conversations         Conversation[] @relation("EmployeeConversations")
+  assignedConversations Conversation[] @relation("AnalystConversations")
+}
+
+model Ticket {
+  id          String         @id @default(cuid())
+  number      String         @unique
+  type        TicketType
+  title       String
+  description String
+  category    TicketCategory
+  priority    Priority
+  status      TicketStatus   @default(ABERTO)
+  affected    Affected       @default(SOMENTE_EU)
+  requesterId String
+  requester   User           @relation(fields: [requesterId], references: [id])
+  /// Prazo da próxima resposta/atualização (SLA). Passado o prazo, o chamado está vencido.
+  dueAt       DateTime
+  resolvedAt  DateTime?
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @default(now())
+
+  updates       TicketUpdate[]
+  conversations Conversation[]
+  drafts        TicketDraft[]
+
+  @@index([requesterId, status])
+}
+
+model TicketUpdate {
+  id        String   @id @default(cuid())
+  ticketId  String
+  ticket    Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  author    String
+  message   String
+  createdAt DateTime @default(now())
+}
+
+model TicketCounter {
+  type  TicketType @id
+  value Int
+}
+
+model Article {
+  id       String          @id @default(cuid())
+  slug     String          @unique
+  title    String
+  content  String
+  category TicketCategory?
+  tags     String[]
+}
+
+model Conversation {
+  id               String           @id @default(cuid())
+  employeeId       String
+  employee         User             @relation("EmployeeConversations", fields: [employeeId], references: [id])
+  mode             ConversationMode @default(AGENT)
+  /// Título exibido no histórico (gerado a partir da primeira mensagem do funcionário).
+  title            String?
+  analystId        String?
+  analyst          User?            @relation("AnalystConversations", fields: [analystId], references: [id])
+  ticketId         String?
+  ticket           Ticket?          @relation(fields: [ticketId], references: [id])
+  handoffReason    HandoffReason?
+  handoffSummary   String?
+  /// Confiança da última decisão do agent (0–1), exibida no console do analista.
+  lastConfidence   Float?
+  userMessageCount Int              @default(0)
+  unreadForAnalyst Int              @default(0)
+  lastMessageAt    DateTime         @default(now())
+  closedAt         DateTime?
+  createdAt        DateTime         @default(now())
+
+  messages  Message[]
+  decisions AgentDecision[]
+  drafts    TicketDraft[]
+
+  @@index([employeeId, mode])
+  @@index([mode, lastMessageAt])
+}
+
+model Message {
+  id             String         @id @default(cuid())
+  conversationId String
+  conversation   Conversation   @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  role           MessageRole
+  content        String
+  authorId       String?
+  /// Blocos ricos exibidos na interface (opções, cards de chamado, rascunho…).
+  parts          Json           @default("[]")
+  createdAt      DateTime       @default(now())
+
+  decision AgentDecision?
+
+  @@index([conversationId, createdAt])
+}
+
+/// Registro de transparência: o que o agent entendeu, o que fez, com que segurança e por quê.
+model AgentDecision {
+  id             String       @id @default(cuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  messageId      String       @unique
+  message        Message      @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  intent         String
+  action         String
+  confidence     Float?
+  reasoning      String
+  steps          Json         @default("[]")
+  toolCalls      Json         @default("[]")
+  model          String?
+  inputTokens    Int?
+  outputTokens   Int?
+  latencyMs      Int?
+  createdAt      DateTime     @default(now())
+}
+
+model TicketDraft {
+  id             String       @id @default(cuid())
+  code           String       @unique
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  kind           DraftKind
+  ticketId       String?
+  ticket         Ticket?      @relation(fields: [ticketId], references: [id])
+  /// Mensagem do agent que exibe o rascunho (atualizada quando ele é confirmado/cancelado).
+  messageId      String?
+  payload        Json
+  status         DraftStatus  @default(PENDING)
+  createdAt      DateTime     @default(now())
+  resolvedAt     DateTime?
+}
